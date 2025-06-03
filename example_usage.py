@@ -36,32 +36,51 @@ class TaskEnvironment:
         correct = 0
         total = 0
         
-        # Apply WINA masking to each linear layer
-        for name, module in self.model.named_modules():
-            if isinstance(module, nn.Linear):
-                # Get weights and apply WINA masking
-                weights = module.weight.data
-                x = torch.randn(1, weights.shape[1])  # Dummy input for masking
-                mask, _ = wina_agent.compute_wina_mask(x, weights, wina_agent.sparsity_config['global'])
-                
-                # Apply mask to weights
-                masked_weights = weights * mask
-                module.weight.data = nn.Parameter(masked_weights)
-        
-        # Forward pass
-        outputs = self.model(self.X)
-        loss = self.criterion(outputs, self.y)
-        
-        # Metrics
-        _, predicted = torch.max(outputs.data, 1)
-        total += self.y.size(0)
-        correct += (predicted == self.y).sum().item()
-        accuracy = correct / total
-        
-        # Calculate FLOPs reduction
-        original_flops = 784 * 256 + 256 * 128 + 128 * 10
-        effective_flops = original_flops * (1 - wina_agent.sparsity_config['global'])
-        flops_reduction = 1 - (effective_flops / original_flops)
+        try:
+            # Apply WINA masking to each linear layer
+            for name, module in self.model.named_modules():
+                if isinstance(module, nn.Linear):
+                    # Get weights and apply WINA masking
+                    weights = module.weight.data.clone()
+                    
+                    # Ensure input dimension matches weight matrix
+                    input_size = weights.size(1)
+                    x = torch.randn(1, input_size, device=weights.device)  # Dummy input for masking
+                    
+                    # Apply WINA masking
+                    mask, _ = wina_agent.compute_wina_mask(
+                        x, 
+                        weights,
+                        wina_agent.sparsity_config['global']
+                    )
+                    
+                    # Ensure mask has same device as weights
+                    mask = mask.to(weights.device)
+                    
+                    # Apply mask to weights
+                    module.weight.data = nn.Parameter(weights * mask)
+            
+            # Forward pass
+            outputs = self.model(self.X)
+            loss = self.criterion(outputs, self.y)
+            
+            # Metrics
+            _, predicted = torch.max(outputs.data, 1)
+            total = self.y.size(0)
+            correct = (predicted == self.y).sum().item()
+            accuracy = correct / total
+            
+            # Calculate FLOPs reduction
+            original_flops = 784 * 256 + 256 * 128 + 128 * 10
+            effective_flops = original_flops * (1 - wina_agent.sparsity_config['global'])
+            flops_reduction = 1 - (effective_flops / original_flops)
+            
+        except Exception as e:
+            print(f"Error during evaluation: {str(e)}")
+            # Return minimum metrics in case of error
+            accuracy = 0.0
+            loss = float('inf')
+            flops_reduction = 0.0
         
         return {
             'accuracy': accuracy,

@@ -25,12 +25,20 @@ class WINASelfOptimizer:
     def compute_wina_mask(self, x: torch.Tensor, weights: torch.Tensor, 
                          sparsity: float) -> torch.Tensor:
         """Core WINA masking computation"""
+        # Ensure input has batch dimension
+        if len(x.shape) == 1:
+            x = x.unsqueeze(0)
+            
+        # Ensure weights are 2D
+        if len(weights.shape) > 2:
+            weights = weights.view(weights.size(0), -1)
+            
         # Orthogonalize weights
-        U, S, Vt = torch.linalg.svd(weights, full_matrices=False)
+        U, S, Vt = torch.linalg.svd(weights.T, full_matrices=False)
         V = Vt.T
         W_orth = weights @ V
         
-        # Transform input
+        # Transform input to match weight dimensions
         x_hat = x @ V.T
         
         # Compute importance scores

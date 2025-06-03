@@ -123,12 +123,36 @@ class DarwinGodelMachine:
         
         for gen in range(n_generations):
             self.generation = gen
+            gen_fitnesses = []
+            
+            print(f"\n--- Generation {gen + 1}/{n_generations} ---")
             
             # Evaluate all agents
-            for agent in self.population:
-                metrics = evaluation_task(agent.wina)
-                agent.performance = metrics.get('fitness', 0)
-                agent.novelty = self._evaluate_novelty(agent, self.population)
+            for i, agent in enumerate(self.population):
+                try:
+                    # Evaluate agent
+                    metrics = evaluation_task(agent.wina)
+                    agent.performance = metrics.get('accuracy', 0)
+                    agent.loss = metrics.get('loss', float('inf'))
+                    
+                    # Calculate fitness (weighted sum of performance and FLOPs reduction)
+                    flops_reduction = metrics.get('flops_reduction', 0)
+                    agent.fitness = agent.performance + 0.3 * flops_reduction
+                    
+                    # Evaluate novelty
+                    agent.novelty = self._evaluate_novelty(agent, self.population)
+                    
+                    gen_fitnesses.append(agent.fitness)
+                    
+                    print(f"Agent {i+1}: Acc={agent.performance:.4f}, "
+                          f"FLOPs↓={flops_reduction*100:.1f}%, "
+                          f"Fitness={agent.fitness:.4f}")
+                          
+                except Exception as e:
+                    print(f"Error evaluating agent {i+1}: {str(e)}")
+                    agent.fitness = -float('inf')
+                    agent.performance = 0
+                    agent.novelty = 0
             
             # Sort by combined fitness (performance + novelty)
             for agent in self.population:
@@ -137,13 +161,25 @@ class DarwinGodelMachine:
             
             self.population.sort(key=lambda x: x.fitness, reverse=True)
             
-            # Save best agents
+            # Calculate statistics
+            best_fitness = max(a.fitness for a in self.population)
+            avg_fitness = np.mean([a.fitness for a in self.population])
+            best_performance = max(a.performance for a in self.population)
+            
+            # Save generation statistics
             self.history.append({
                 'generation': gen,
-                'best_fitness': self.population[0].fitness,
-                'best_performance': self.population[0].performance,
-                'avg_fitness': np.mean([a.fitness for a in self.population])
+                'best_fitness': best_fitness,
+                'best_performance': best_performance,
+                'avg_fitness': avg_fitness,
+                'best_flops_reduction': max(a.wina.sparsity_config['global'] for a in self.population)
             })
+            
+            print(f"\nGeneration {gen} Summary:")
+            print(f"Best Fitness: {best_fitness:.4f}")
+            print(f"Best Accuracy: {best_performance*100:.2f}%")
+            print(f"Average Fitness: {avg_fitness:.4f}")
+            print(f"Best Sparsity: {self.population[0].wina.sparsity_config['global']:.2f}")
             
             # Create next generation (elitism + offspring)
             next_generation = self.population[:self.elite_size]
