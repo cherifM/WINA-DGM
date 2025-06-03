@@ -1,8 +1,8 @@
 # WINA-DGM: Weight Importance and Neuron Activation for Darwin-Gödel Machines
 
-**Author:** [Your Name]  
-**Email:** [Your Email]  
-**Affiliation:** [Your Institution/Company]  
+**Author:** [Cherif Mihoubi]  
+**Email:** [cmihoubi@gmail.com]  
+
 **Latest Report:** [WINA-DGM Report (2025-06-03)](wina_reports/wina_dgm_report_2025-06-03_23-11-14.md)
 
 ![WINA-DGM Architecture](https://via.placeholder.com/800x400.png?text=WINA-DGM+Architecture)
