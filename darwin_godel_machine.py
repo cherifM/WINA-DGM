@@ -15,13 +15,17 @@ class Agent:
     """Base agent class for DGM evolution"""
     id: str
     config: Dict
+    model: torch.nn.Module  # PyTorch model for this agent
     performance: float = 0.0
     novelty: float = 0.0
     code: Optional[str] = None
     
     def __post_init__(self):
-        self.wina = WINASelfOptimizer()
-        self.wina.sparsity_config.update(self.config)
+        # Create a deep copy of the model to avoid sharing weights
+        model_copy = copy.deepcopy(self.model)
+        self.wina = WINASelfOptimizer(model=model_copy)
+        if hasattr(self.wina, 'sparsity_config') and self.config:
+            self.wina.sparsity_config.update(self.config)
 
 class DarwinGodelMachine:
     """
@@ -32,48 +36,151 @@ class DarwinGodelMachine:
         self,
         initial_agent: Agent,
         population_size: int = 20,
-        novelty_weight: float = 0.3,
-        mutation_rate: float = 0.1,
-        elite_size: int = 2,
+        novelty_weight: float = 0.4,
+        mutation_rate: float = 0.15,
+        elite_size: int = 3,
+        crossover_prob: float = 0.7,
+        min_sparsity: float = 0.1,
+        max_sparsity: float = 0.95,
+        device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     ):
         self.population = [initial_agent]
         self.population_size = population_size
         self.novelty_weight = novelty_weight
         self.mutation_rate = mutation_rate
         self.elite_size = elite_size
-        self.history = []
+        self.crossover_prob = crossover_prob
+        self.min_sparsity = min_sparsity
+        self.max_sparsity = max_sparsity
+        self.device = device
         self.generation = 0
+        self.history = []
         
-    def _initialize_population(self):
-        """Initialize population with random variations"""
+        # Initialize population
+        self._initialize_population(initial_agent)
+    
+    def _initialize_population(self, base_agent: Agent):
+        """Initialize the population with random variations of the base agent."""
+        import copy
+        import numpy as np
+        
+        # Keep the original agent
+        self.population = [base_agent]
+        
+        # Create variations
         while len(self.population) < self.population_size:
-            new_agent = self._mutate_agent(random.choice(self.population))
+            new_agent = self._mutate_agent(base_agent)
             self.population.append(new_agent)
     
     def _mutate_agent(self, agent: Agent) -> Agent:
-        """Create a mutated copy of an agent"""
-        new_config = agent.config.copy()
+        """Create a mutated copy of an agent."""
+        import copy
+        import numpy as np
         
-        # Mutate global sparsity
-        if random.random() < self.mutation_rate:
-            new_config['global'] = np.clip(
-                new_config['global'] + np.random.normal(0, 0.05),
-                0.1, 0.9
-            )
-            
-        # Mutate layer schedule
-        if 'layer_schedule' in new_config and random.random() < self.mutation_rate:
-            schedule = new_config['layer_schedule']
-            idx = random.randint(0, len(schedule)-1)
-            schedule[idx] = np.clip(
-                schedule[idx] + np.random.normal(0, 0.05),
-                0.1, 0.9
-            )
-            
+        # Create a deep copy of the config to avoid modifying the original
+        new_config = copy.deepcopy(agent.config)
+        
+        # Mutate sparsity values with bounds checking
+        for key in new_config:
+            if isinstance(new_config[key], (int, float)):
+                # Add multiplicative noise with bounds checking
+                new_value = new_config[key] * np.random.normal(1.0, 0.2)
+                new_config[key] = np.clip(
+                    new_value,
+                    self.min_sparsity,
+                    self.max_sparsity
+                )
+        
+        # Create a new agent with the same model and new config
         return Agent(
             id=f"agent_{len(self.population)}_{self.generation}",
+            model=agent.model,  # Share the model reference
             config=new_config
         )
+        
+    def _crossover(self, parent1: Agent, parent2: Agent) -> Agent:
+        """Create a new agent by crossing over two parents."""
+        import random
+        import numpy as np
+        
+        child_config = {}
+        for key in parent1.config:
+            if isinstance(parent1.config[key], (int, float)):
+                # Blend parameters from both parents
+                alpha = np.random.uniform(0.3, 0.7)  # Blend ratio
+                child_config[key] = (
+                    alpha * parent1.config[key] + 
+                    (1 - alpha) * parent2.config[key]
+                )
+            else:
+                # Copy other parameters from a random parent
+                child_config[key] = random.choice([
+                    parent1.config[key],
+                    parent2.config[key]
+                ])
+        
+        return Agent(
+            id=f"agent_{len(self.population)}_{self.generation}",
+            model=parent1.model,  # Use the model from first parent
+            config=child_config
+        )
+        
+    def _tournament_selection(self, tournament_size: int = 3) -> Agent:
+        """Select an agent using tournament selection."""
+        participants = random.sample(
+            self.population, 
+            min(tournament_size, len(self.population))
+        )
+        return max(participants, key=lambda x: x.fitness)
+        
+    def _select_and_reproduce(self):
+        """Select parents and create the next generation."""
+        # Sort by fitness
+        self.population.sort(key=lambda x: x.fitness, reverse=True)
+        
+        # Keep elites
+        new_population = self.population[:self.elite_size]
+        
+        # Create next generation
+        while len(new_population) < self.population_size:
+            # Select parents using tournament selection
+            parent1 = self._tournament_selection()
+            parent2 = self._tournament_selection()
+            
+            # Crossover
+            if (random.random() < self.crossover_prob and 
+                len(new_population) < self.population_size - 1):
+                child = self._crossover(parent1, parent2)
+                new_population.append(child)
+            
+            # Mutation
+            if len(new_population) < self.population_size:
+                child = self._mutate_agent(random.choice([parent1, parent2]))
+                new_population.append(child)
+        
+        self.population = new_population
+        
+    def _evaluate_population(self, fitness_function):
+        """Evaluate all agents in the population."""
+        for agent in self.population:
+            if not hasattr(agent, 'fitness'):
+                agent.fitness = fitness_function(agent)
+    
+    def evolve(self, fitness_function, n_generations: int = 10):
+        """Evolve the population for a number of generations."""
+        for gen in range(n_generations):
+            self.generation = gen
+            self._evaluate_population(fitness_function)
+            self._select_and_reproduce()
+            self.history.append(self.get_best_agent())
+    
+    def get_best_agent(self) -> Agent:
+        """Get the best agent from the current population."""
+        return max(self.population, key=lambda x: x.fitness)
+    
+    def get_average_fitness(self) -> float:
+        """Calculate the average fitness of the population."""
+        return sum(agent.fitness for agent in self.population) / len(self.population)
     
     def _evaluate_novelty(self, agent: Agent, population: List[Agent]) -> float:
         """Calculate novelty score based on behavior space distance"""

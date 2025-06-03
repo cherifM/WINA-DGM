@@ -1,5 +1,10 @@
 # WINA-DGM: Weight Importance and Neuron Activation for Darwin-Gödel Machines
 
+**Author:** [Your Name]  
+**Email:** [Your Email]  
+**Affiliation:** [Your Institution/Company]  
+**Latest Report:** [WINA-DGM Report (2025-06-03)](wina_reports/wina_dgm_report_2025-06-03_23-11-14.md)
+
 ![WINA-DGM Architecture](https://via.placeholder.com/800x400.png?text=WINA-DGM+Architecture)
 
 A PyTorch implementation of Weight Importance and Neuron Activation (WINA) optimization within a Darwin-Gödel Machine framework for learning optimal sparse neural network architectures through evolutionary optimization.
