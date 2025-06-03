@@ -12,47 +12,90 @@ from typing import Dict, Tuple
 import ast
 
 class WINASelfOptimizer:
-    """Agent that optimizes its own WINA sparsity configuration"""
+    """
+    WINA (Weight Importance and Neuron Activation) Self-Optimizer
     
-    def __init__(self):
-        self.sparsity_config = {
-            'global': 0.65,
-            'layer_schedule': [0.5, 0.6, 0.7, 0.8, 0.8, 0.7, 0.6, 0.5],
-            'importance_threshold': 0.1
+    Implements a self-optimizing neural network using weight importance and activation patterns
+    to learn optimal sparsity masks through evolutionary optimization.
+    
+    Key Mathematical Formulations:
+    - Weight Importance: I_ij = |w_ij| ⋅ 𝔼[|x_i|]
+    - Sparsity Constraint: ∑(1 - m_ij) ≤ γ⋅n  where γ ∈ [0,1] is target sparsity
+    - Orthogonality Loss: L_orth = β⋅||W^T W - I||_F^2
+    - Fitness: F = accuracy + λ⋅FLOPs_reduction
+    
+    Args:
+        model: PyTorch model to optimize
+        sparsity_config: Dict of layer_name: target_sparsity
+        device: Device to run optimization on (cuda/cpu)
+    """
+    def __init__(self, model, sparsity_config=None, device='cuda' if torch.cuda.is_available() else 'cpu'):
+        self.model = model
+        self.device = device
+        self.sparsity_config = sparsity_config or {'global': 0.5}  # γ: target sparsity ratio
+        
+        # Hyperparameters
+        self.α = 0.01  # Learning rate for WINA updates
+        self.β = 0.1   # Orthogonalization strength
+        self.λ = 0.3   # FLOPs reduction weight in fitness
+        
+        # Tracking metrics
+        self.metrics = {
+            'sparsity': [],      # 1 - |m|₀/n where n is total params
+            'orthogonality': [],  # ||W^T W - I||_F
+            'fitness': [],       # Accuracy + λ⋅FLOPs_reduction
+            'accuracy': [],      # Task accuracy
+            'flops_red': []      # FLOPs reduction percentage
         }
-        self.performance_history = []
+    
+    def compute_wina_mask(self, x: torch.Tensor, weights: torch.Tensor, sparsity: float) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute WINA mask based on weight and input importance.
         
-    def compute_wina_mask(self, x: torch.Tensor, weights: torch.Tensor, 
-                         sparsity: float) -> torch.Tensor:
-        """Core WINA masking computation"""
-        # Ensure input has batch dimension
-        if len(x.shape) == 1:
-            x = x.unsqueeze(0)
+        Args:
+            x: Input activations of shape (batch_size, in_features)
+            weights: Weight matrix of shape (out_features, in_features)
+            sparsity: Target sparsity ratio γ ∈ [0,1]
             
-        # Ensure weights are 2D
-        if len(weights.shape) > 2:
-            weights = weights.view(weights.size(0), -1)
+        Returns:
+            mask: Binary mask tensor (1, in_features)
+            importance: Importance scores (1, in_features)
             
-        # Orthogonalize weights
-        U, S, Vt = torch.linalg.svd(weights.T, full_matrices=False)
-        V = Vt.T
-        W_orth = weights @ V
-        
-        # Transform input to match weight dimensions
-        x_hat = x @ V.T
-        
-        # Compute importance scores
-        weight_norms = torch.norm(W_orth, dim=0)
-        importance = torch.abs(x_hat) * weight_norms
-        
-        # Create sparse mask
-        k = int((1 - sparsity) * x.shape[-1])
-        _, topk_indices = torch.topk(importance, k, dim=-1)
-        
-        mask = torch.zeros_like(x_hat)
-        mask.scatter_(-1, topk_indices, 1.0)
-        
-        return mask, importance
+        Math:
+            1. Compute weight importance: I_ij = |w_ij| ⋅ 𝔼[|x_i|]
+            2. Keep top-k important weights: k = ⌈(1-γ)⋅n⌉
+            3. Return binary mask m ∈ {0,1}^n
+        """
+        with torch.no_grad():
+            try:
+                # Reshape and move to correct device
+                weights = weights.view(weights.size(0), -1).to(x.device)
+                input_dim = weights.size(1)
+                
+                # 1. Compute importance scores
+                weight_importance = torch.norm(weights, dim=0, keepdim=True)  # L2 norm over output dim
+                input_importance = torch.abs(x).mean(dim=0, keepdim=True)     # Mean abs activation
+                importance = weight_importance * input_importance  # Element-wise product
+                
+                # 2. Compute top-k threshold
+                k = max(1, int((1 - sparsity) * input_dim))  # At least 1 connection
+                
+                # 3. Create binary mask
+                if k < input_dim:
+                    _, topk_indices = torch.topk(importance, k, dim=1)
+                    mask = torch.zeros_like(importance, device=x.device)
+                    mask.scatter_(1, topk_indices, 1.0)  # One-hot mask
+                else:
+                    mask = torch.ones_like(importance, device=x.device)
+                    
+                return mask, importance
+                
+            except Exception as e:
+                print(f"Error in compute_wina_mask: {str(e)}")
+                # Fallback: return all-ones mask
+                input_dim = weights.size(1) if len(weights.shape) > 1 else weights.size(0)
+                return (torch.ones(1, input_dim, device=x.device), 
+                        torch.ones(1, input_dim, device=x.device))
     
     def analyze_sparsity_impact(self, task_data: Dict) -> Dict[str, float]:
         """Analyze impact of current sparsity configuration"""
